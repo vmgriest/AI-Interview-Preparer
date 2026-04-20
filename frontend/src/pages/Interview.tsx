@@ -27,15 +27,6 @@ function stripMarkdown(text: string): string {
     .trim();
 }
 
-function speak(text: string, enabled: boolean) {
-  if (!enabled || !window.speechSynthesis) return;
-  window.speechSynthesis.cancel();
-  const utterance = new SpeechSynthesisUtterance(stripMarkdown(text));
-  utterance.rate = 0.95;
-  utterance.pitch = 1.0;
-  window.speechSynthesis.speak(utterance);
-}
-
 const NEXT_SECTION_MARKER = "[NEXT_SECTION]";
 
 export default function Interview() {
@@ -52,10 +43,40 @@ export default function Interview() {
   const [ttsEnabled, setTtsEnabled] = useState(true);
   const [isVoiceRecording, setIsVoiceRecording] = useState(false);
   const [pendingAudio, setPendingAudio] = useState<Blob | null>(null);
+  const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
+  const [selectedVoice, setSelectedVoice] = useState<string>("");
   const [error, setError] = useState("");
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef("");
+
+  // Load available TTS voices (they load async in some browsers)
+  useEffect(() => {
+    function loadVoices() {
+      const v = window.speechSynthesis?.getVoices() ?? [];
+      if (v.length) {
+        setVoices(v);
+        const def = v.find((x) => x.default) ?? v[0];
+        setSelectedVoice((prev) => prev || def?.name || "");
+      }
+    }
+    loadVoices();
+    window.speechSynthesis?.addEventListener("voiceschanged", loadVoices);
+    return () => window.speechSynthesis?.removeEventListener("voiceschanged", loadVoices);
+  }, []);
+
+  function speak(text: string, enabled: boolean) {
+    if (!enabled || !window.speechSynthesis) return;
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(stripMarkdown(text));
+    utterance.rate = 0.95;
+    utterance.pitch = 1.0;
+    if (selectedVoice) {
+      const voice = voices.find((v) => v.name === selectedVoice);
+      if (voice) utterance.voice = voice;
+    }
+    window.speechSynthesis.speak(utterance);
+  }
 
   useEffect(() => {
     if (!sessionId) return;
@@ -216,7 +237,20 @@ export default function Interview() {
           <p className="text-slate-400 text-xs">{session.user_name}</p>
         </div>
 
-        {/* TTS toggle */}
+        {/* Voice selector + TTS toggle */}
+        {voices.length > 0 && ttsEnabled && (
+          <select
+            value={selectedVoice}
+            onChange={(e) => setSelectedVoice(e.target.value)}
+            className="bg-slate-800 border border-slate-700 text-slate-300 text-xs rounded-lg px-2 py-1.5 max-w-[160px] focus:outline-none focus:border-blue-500 hidden sm:block"
+          >
+            {voices.map((v) => (
+              <option key={v.name} value={v.name}>
+                {v.name}
+              </option>
+            ))}
+          </select>
+        )}
         <button
           onClick={() => {
             const next = !ttsEnabled;
@@ -288,7 +322,11 @@ export default function Interview() {
             )}
 
             {messages.map((msg) => (
-              <ChatMessage key={msg.id} message={msg} />
+              <ChatMessage
+                key={msg.id}
+                message={msg}
+                onSpeak={ttsEnabled ? (text) => speak(text, true) : undefined}
+              />
             ))}
 
             {done && (

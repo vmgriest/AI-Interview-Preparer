@@ -1,4 +1,4 @@
-import { BrainCircuit, User } from "lucide-react";
+import { BrainCircuit, User, Volume2 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 
 interface Props {
@@ -7,9 +7,10 @@ interface Props {
     content: string;
     streaming?: boolean;
   };
+  onSpeak?: (text: string) => void;
 }
 
-export default function ChatMessage({ message }: Props) {
+export default function ChatMessage({ message, onSpeak }: Props) {
   const isInterviewer = message.role === "interviewer";
 
   return (
@@ -42,6 +43,16 @@ export default function ChatMessage({ message }: Props) {
         )}
         {message.streaming && message.content && (
           <span className="inline-block w-0.5 h-4 bg-blue-400 animate-pulse ml-0.5 align-middle" />
+        )}
+        {isInterviewer && !message.streaming && message.content && onSpeak && (
+          <button
+            onClick={() => onSpeak(message.content)}
+            title="Play aloud"
+            className="mt-2 flex items-center gap-1 text-xs text-slate-500 hover:text-blue-400 transition-colors"
+          >
+            <Volume2 size={13} />
+            Play
+          </button>
         )}
       </div>
     </div>
