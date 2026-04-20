@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from ..database import get_connection
+from ..services.transcription_service import transcribe_bytes
 from ..services.ollama_service import chat_stream
 from ..services.interview_service import build_system_prompt
 
@@ -133,6 +134,23 @@ async def upload_audio(
             conn.close()
 
     return {"audio_path": rel_path}
+
+
+@router.post("/transcribe")
+async def transcribe_audio_endpoint(audio: UploadFile = File(...)):
+    data = await audio.read()
+    print(f"[transcribe] received {len(data)} bytes, filename={audio.filename}, content_type={audio.content_type}")
+    if len(data) < 200:
+        print("[transcribe] audio too small, skipping")
+        return {"text": ""}
+    suffix = os.path.splitext(audio.filename or ".webm")[1] or ".webm"
+    try:
+        text = transcribe_bytes(data, suffix=suffix)
+        print(f"[transcribe] result: '{text}'")
+    except Exception as e:
+        print(f"[transcribe] error: {e}")
+        return {"text": "", "error": str(e)}
+    return {"text": text}
 
 
 def save_interviewer_message(session_id: str, content: str, section_index: int, msg_type: str = "feedback"):

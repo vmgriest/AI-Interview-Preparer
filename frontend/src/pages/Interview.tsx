@@ -5,7 +5,7 @@ import type { Session, Message } from "../types";
 import ChatMessage from "../components/ChatMessage";
 import VoiceInput from "../components/VoiceInput";
 import InterviewProgress from "../components/InterviewProgress";
-import { CheckCircle, Loader2, ArrowLeft, Send } from "lucide-react";
+import { CheckCircle, Loader2, ArrowLeft, Send, Volume2, VolumeX } from "lucide-react";
 
 interface UiMessage {
   id: string;
@@ -13,6 +13,30 @@ interface UiMessage {
   content: string;
   streaming?: boolean;
 }
+
+// Strip markdown syntax before speaking
+function stripMarkdown(text: string): string {
+  return text
+    .replace(/\[NEXT_SECTION\]/g, "")
+    .replace(/#{1,6}\s/g, "")
+    .replace(/\*\*(.*?)\*\*/g, "$1")
+    .replace(/\*(.*?)\*/g, "$1")
+    .replace(/`{1,3}[^`]*`{1,3}/g, "")
+    .replace(/[✓△]/g, "")
+    .replace(/\n{2,}/g, ". ")
+    .trim();
+}
+
+function speak(text: string, enabled: boolean) {
+  if (!enabled || !window.speechSynthesis) return;
+  window.speechSynthesis.cancel();
+  const utterance = new SpeechSynthesisUtterance(stripMarkdown(text));
+  utterance.rate = 0.95;
+  utterance.pitch = 1.0;
+  window.speechSynthesis.speak(utterance);
+}
+
+const NEXT_SECTION_MARKER = "[NEXT_SECTION]";
 
 export default function Interview() {
   const { sessionId } = useParams<{ sessionId: string }>();
@@ -25,16 +49,18 @@ export default function Interview() {
   const [started, setStarted] = useState(false);
   const [done, setDone] = useState(false);
   const [currentSection, setCurrentSection] = useState(0);
+  const [ttsEnabled, setTtsEnabled] = useState(true);
+  const [isVoiceRecording, setIsVoiceRecording] = useState(false);
+  const [pendingAudio, setPendingAudio] = useState<Blob | null>(null);
   const [error, setError] = useState("");
 
   const bottomRef = useRef<HTMLDivElement>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const inputRef = useRef("");
 
   useEffect(() => {
     if (!sessionId) return;
     getSession(sessionId).then((s) => {
       setSession(s);
-      // If session has existing messages, load them
       if (s.messages && s.messages.length > 0) {
         setMessages(
           s.messages.map((m: Message) => ({
@@ -43,6 +69,12 @@ export default function Interview() {
             content: m.content,
           }))
         );
+        // Restore section from saved messages
+        const sectionIndex = s.messages.reduce(
+          (max: number, m: Message) => Math.max(max, m.section_index ?? 0),
+          0
+        );
+        setCurrentSection(sectionIndex);
         setStarted(true);
         if (s.completed_at) setDone(true);
       }
@@ -53,15 +85,37 @@ export default function Interview() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  // Stop TTS when component unmounts
+  useEffect(() => () => { window.speechSynthesis?.cancel(); }, []);
+
   const appendChunk = useCallback((id: string, chunk: string) => {
     setMessages((prev) =>
       prev.map((m) => (m.id === id ? { ...m, content: m.content + chunk } : m))
     );
   }, []);
 
-  const finalizeMessage = useCallback((id: string) => {
-    setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, streaming: false } : m)));
-  }, []);
+  // Clean marker from displayed text and advance section counter
+  const finalizeInterviewerMessage = useCallback(
+    (id: string, tts: boolean) => {
+      setMessages((prev) => {
+        const updated = prev.map((m) => {
+          if (m.id !== id) return m;
+          const cleaned = m.content.replace(NEXT_SECTION_MARKER, "").trim();
+          return { ...m, content: cleaned, streaming: false };
+        });
+        // Detect section transition
+        const msg = prev.find((m) => m.id === id);
+        if (msg?.content.includes(NEXT_SECTION_MARKER)) {
+          setCurrentSection((s) => s + 1);
+        }
+        // Speak the cleaned message
+        const finalMsg = updated.find((m) => m.id === id);
+        if (finalMsg) speak(finalMsg.content, tts);
+        return updated;
+      });
+    },
+    []
+  );
 
   async function startInterview() {
     if (!sessionId || busy) return;
@@ -73,7 +127,7 @@ export default function Interview() {
       for await (const chunk of streamStart(sessionId)) {
         appendChunk(msgId, chunk);
       }
-      finalizeMessage(msgId);
+      finalizeInterviewerMessage(msgId, ttsEnabled);
     } catch (e) {
       setError(String(e));
     }
@@ -84,6 +138,7 @@ export default function Interview() {
     if (!sessionId || busy || !text.trim()) return;
     setBusy(true);
     setInput("");
+    window.speechSynthesis?.cancel();
 
     const candidateId = crypto.randomUUID();
     const interviewerId = crypto.randomUUID();
@@ -94,7 +149,6 @@ export default function Interview() {
       { id: interviewerId, role: "interviewer", content: "", streaming: true },
     ]);
 
-    // Upload audio in background if provided
     if (audioBlob) {
       uploadAudio(sessionId, audioBlob).catch(console.error);
     }
@@ -103,30 +157,32 @@ export default function Interview() {
       for await (const chunk of streamMessage(sessionId, text, currentSection)) {
         appendChunk(interviewerId, chunk);
       }
-      finalizeMessage(interviewerId);
+      finalizeInterviewerMessage(interviewerId, ttsEnabled);
     } catch (e) {
       setError(String(e));
     }
-
-    // Detect section transition by counting messages
-    setMessages((prev) => {
-      const candidateCount = prev.filter((m) => m.role === "candidate").length;
-      const plan = session?.interview_plan ?? [];
-      let total = 0;
-      for (let i = 0; i <= currentSection && i < plan.length; i++) {
-        total += plan[i].questions.length;
-      }
-      if (candidateCount >= total && currentSection < (plan.length - 1)) {
-        setCurrentSection((s) => s + 1);
-      }
-      return prev;
-    });
-
     setBusy(false);
+  }
+
+  function handleVoiceTranscript(text: string) {
+    inputRef.current = text;
+    setInput(text);
+  }
+
+  function handleAudioCaptured(blob: Blob) {
+    setPendingAudio(blob);
+  }
+
+  function submitInput() {
+    const text = inputRef.current;
+    if (!text.trim()) return;
+    sendMessage(text, pendingAudio ?? undefined);
+    setPendingAudio(null);
   }
 
   async function handleFinish() {
     if (!sessionId) return;
+    window.speechSynthesis?.cancel();
     await completeSession(sessionId);
     setDone(true);
   }
@@ -134,7 +190,7 @@ export default function Interview() {
   function handleKeyDown(e: React.KeyboardEvent) {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      sendMessage(input);
+      submitInput();
     }
   }
 
@@ -149,20 +205,30 @@ export default function Interview() {
   return (
     <div className="h-screen flex flex-col bg-slate-950">
       {/* Header */}
-      <header className="flex items-center gap-4 px-4 py-3 border-b border-slate-800 bg-slate-900 shrink-0">
-        <button
-          onClick={() => navigate("/")}
-          className="text-slate-400 hover:text-white transition-colors"
-        >
+      <header className="flex items-center gap-3 px-4 py-3 border-b border-slate-800 bg-slate-900 shrink-0">
+        <button onClick={() => navigate("/")} className="text-slate-400 hover:text-white transition-colors">
           <ArrowLeft size={20} />
         </button>
         <div className="flex-1 min-w-0">
           <p className="font-semibold text-white truncate">
-            {session.position}
-            {session.company ? ` · ${session.company}` : ""}
+            {session.position}{session.company ? ` · ${session.company}` : ""}
           </p>
           <p className="text-slate-400 text-xs">{session.user_name}</p>
         </div>
+
+        {/* TTS toggle */}
+        <button
+          onClick={() => {
+            const next = !ttsEnabled;
+            setTtsEnabled(next);
+            if (!next) window.speechSynthesis?.cancel();
+          }}
+          title={ttsEnabled ? "Mute AI voice" : "Unmute AI voice"}
+          className="p-2 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+        >
+          {ttsEnabled ? <Volume2 size={18} /> : <VolumeX size={18} />}
+        </button>
+
         {!done && started && (
           <button
             onClick={handleFinish}
@@ -200,17 +266,19 @@ export default function Interview() {
             </div>
           )}
 
-          {/* Messages */}
           <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
             {!started && (
               <div className="flex flex-col items-center justify-center h-full text-center space-y-4">
                 <p className="text-slate-400">
-                  Ready to begin your mock interview for{" "}
+                  Ready for your mock interview for{" "}
                   <span className="text-white font-medium">{session.position}</span>?
                 </p>
                 <p className="text-slate-500 text-sm">
-                  {session.interview_plan.length} sections · ~
+                  {session.interview_plan.length} sections ·{" "}
                   {session.interview_plan.reduce((a, s) => a + s.questions.length, 0)} questions
+                </p>
+                <p className="text-slate-600 text-xs">
+                  AI voice is {ttsEnabled ? "on" : "off"} — toggle with the speaker icon above
                 </p>
                 <button onClick={startInterview} disabled={busy} className="btn-primary">
                   {busy ? <Loader2 size={16} className="animate-spin inline mr-2" /> : null}
@@ -228,10 +296,7 @@ export default function Interview() {
                 <div className="card text-center space-y-3 max-w-sm">
                   <CheckCircle size={32} className="text-emerald-400 mx-auto" />
                   <p className="font-semibold text-white">Interview Complete!</p>
-                  <button
-                    onClick={() => navigate(`/session/${sessionId}`)}
-                    className="btn-primary w-full"
-                  >
+                  <button onClick={() => navigate(`/session/${sessionId}`)} className="btn-primary w-full">
                     View Full Summary
                   </button>
                 </div>
@@ -245,34 +310,31 @@ export default function Interview() {
             <div className="border-t border-slate-800 bg-slate-900 px-4 py-3 shrink-0">
               <div className="flex items-end gap-2 max-w-4xl mx-auto">
                 <VoiceInput
-                  onTranscript={(text) => setInput((prev) => prev + text)}
-                  onAudioReady={(blob) => {
-                    if (input.trim()) sendMessage(input, blob);
-                  }}
+                  onTranscript={handleVoiceTranscript}
+                  onRecordingChange={setIsVoiceRecording}
+                  onAudioCaptured={handleAudioCaptured}
                   disabled={busy}
                 />
                 <textarea
-                  ref={textareaRef}
-                  className="input flex-1 resize-none min-h-[44px] max-h-36 leading-tight py-3"
-                  placeholder="Type your answer… (Enter to send, Shift+Enter for newline)"
+                  className={`input flex-1 resize-none min-h-[44px] max-h-36 leading-tight py-3 ${isVoiceRecording ? "border-red-500" : ""}`}
+                  placeholder={isVoiceRecording ? "🎙️ Listening… speak your answer" : "Type your answer… (Enter to send, Shift+Enter for newline)"}
                   value={input}
-                  onChange={(e) => setInput(e.target.value)}
+                  onChange={(e) => { inputRef.current = e.target.value; setInput(e.target.value); }}
                   onKeyDown={handleKeyDown}
                   rows={1}
                   disabled={busy}
                 />
                 <button
-                  onClick={() => sendMessage(input)}
+                  onClick={submitInput}
                   disabled={busy || !input.trim()}
                   className="btn-primary px-3 py-3 flex items-center justify-center"
                 >
-                  {busy ? (
-                    <Loader2 size={18} className="animate-spin" />
-                  ) : (
-                    <Send size={18} />
-                  )}
+                  {busy ? <Loader2 size={18} className="animate-spin" /> : <Send size={18} />}
                 </button>
               </div>
+              <p className="text-slate-600 text-xs text-center mt-2">
+                🎙️ Click mic to record — stops and sends automatically · 🔊 AI voice {ttsEnabled ? "on" : "off"}
+              </p>
             </div>
           )}
         </main>
