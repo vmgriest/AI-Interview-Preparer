@@ -56,28 +56,38 @@ npm install
 
 ## Running
 
-Open **two terminals** from the project root.
+> Make sure **Ollama is running** before starting the backend. If it's not in your system tray, run `ollama serve` in a separate terminal.
 
-**Terminal 1 — Backend**
+Open **two terminals** from the project root (`C:\Users\vmgri\AI-Interview-Preparer`).
 
-```bash
+### Terminal 1 — Backend
+
+```powershell
 # Windows
 .\backend\venv\Scripts\Activate.ps1
 uvicorn backend.main:app --reload --port 8000
+```
 
+```bash
 # macOS / Linux
 source backend/venv/bin/activate
 uvicorn backend.main:app --reload --port 8000
 ```
 
-**Terminal 2 — Frontend**
+Verify it's running: open [http://localhost:8000/api/health](http://localhost:8000/api/health) — you should see `{"status":"ok"}`.
 
-```bash
+### Terminal 2 — Frontend
+
+```powershell
 cd frontend
 npm run dev
 ```
 
-Then open [http://localhost:5173](http://localhost:5173).
+Then open [http://localhost:5173](http://localhost:5173) in **Chrome**.
+
+### First run
+
+On the very first voice recording, faster-whisper will download the Whisper `small` model (~460 MB). This only happens once — subsequent transcriptions use the cached model.
 
 ---
 

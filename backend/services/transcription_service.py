@@ -1,14 +1,13 @@
 import os
 import tempfile
-from faster_whisper import WhisperModel
 
-_model: WhisperModel | None = None
+_model = None
 
 
-def get_model() -> WhisperModel:
+def get_model():
     global _model
     if _model is None:
-        # "tiny" downloads ~40MB on first use, runs on CPU
+        from faster_whisper import WhisperModel
         _model = WhisperModel("small", device="cpu", compute_type="int8")
     return _model
 
